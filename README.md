@@ -1,7 +1,7 @@
 # UWE---UniversalWordEditor
 Estou cansado do Word (Microsoft), estou cansado do Docs (Google) e estou muito cansado do Canva. Hora de criar o melhor dos 2 (ou 3) mundos. Esse é o projeto do UWE, Editor de Texto (ou palavras) Universal. (o nome não é UTE pois acho um tanto estranho, mas estou aberto caso vcs achem melhor mudar o nome). Esse projeto ainda está em desenvolvimento.
 
-O código ainda pode estar com erro, pois eu criei em HTML por um método um tanto estranho. Abrir o DevTools direto pelo navegador e fazer o código lá. Como deu muitos erros, então chamei ajuda de algumas IAs. Mesmo assim, ainda está em beta. A principio, este editor de texto tem suporte a maioria dos "tipos" de imagem, como png, jpeg, pdf, bmp, gif, eps e svg. 
+O código ainda pode estar com erro, pois eu criei em HTML por um método um tanto estranho. Abrir o DevTools direto pelo navegador e fazer o código lá. Como deu muitos erros, chamei ajuda de algumas IAs. Mesmo assim, ainda está em beta. A principio, este editor de texto tem suporte a maioria dos "tipos" de imagem, como png, jpeg, pdf, bmp, gif, eps e svg. 
 
 Eu também não sei como farei para colocar na web, se vc souber, sinta-se à vontade para colocar nos comentários. 
 
