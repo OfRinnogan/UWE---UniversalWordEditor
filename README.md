@@ -12,7 +12,7 @@ Essa é a foto dos arquivos que estão disponíveis aqui
 Lista de prioridade de atualização:
 
 1 Login ✅
-2 Compartilhamento
+2 Compartilhamento ✅
 3 Exportação para .docx ou .pdf
 4 Colaboração em tempo real
 5 Histórico de versão
