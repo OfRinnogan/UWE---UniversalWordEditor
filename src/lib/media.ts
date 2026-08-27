@@ -8,6 +8,19 @@ export interface UweDocument {
   global_font: string | null;
   created_at: string;
   updated_at: string;
+  // What the current user can do with this document — "owner" always can;
+  // "editor" can change content but not manage sharing or delete it;
+  // "viewer" is read-only.
+  role: "owner" | "editor" | "viewer";
+  owner_name: string;
+  owner_email: string;
+}
+
+export interface DocumentShare {
+  user_id: string;
+  email: string;
+  name: string;
+  role: "editor" | "viewer";
 }
 
 export interface MediaUploadResponse {

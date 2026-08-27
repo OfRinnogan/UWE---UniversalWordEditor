@@ -9,17 +9,6 @@ Tem também a pasta do node_modules, mas eu não consigo enviar pois tem 500 pas
 <img width="1401" height="450" alt="image" src="https://github.com/user-attachments/assets/da01f699-c147-49f3-8b76-53e404d5a9f4" />
 Essa é a foto dos arquivos que estão disponíveis aqui
 
-Lista de prioridade de atualização:
-
-1 Login ✅
-2 Compartilhamento ✅
-3 Exportação para .docx ou .pdf
-4 Colaboração em tempo real
-5 Histórico de versão
-6 Aba de pesquisa do google
-7 Integração com Google Gemini ou qualquer outra IA
-8 (Por fim, mas não menos importante) Plugins, o que seria as extensões do Chrome, mas para o UWE
-
 ---
 
 ## Como rodar localmente
@@ -52,4 +41,15 @@ npm run build   # gera dist/
 - Backend: adicionado o endpoint `POST /api/media/upload` que faltava (upload de mídia retornava 404).
 - Backend: corrigido bug que impedia desativar a "Fonte Global" depois de ativada.
 - Adicionado `backend/requirements.txt` (não existia).
+
+## Funcionalidade #1: Login
+
+- **Backend:** tabela `users` (e-mail único, senha com hash bcrypt), JWT (30 dias de validade), endpoints `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`. Todos os endpoints de documentos e upload agora exigem token e retornam apenas dados do dono (isolamento por usuário testado).
+- **Frontend:** contexto de autenticação (`src/lib/auth.tsx`), páginas `/login` e `/register`, rotas protegidas (`RequireAuth`) redirecionam para login se não autenticado, token enviado automaticamente em toda chamada à API, sessão expirada desloga sozinho.
+- **Segurança:** o token fica no `localStorage` (padrão comum e simples). Para um produto voltado ao público, o próximo passo recomendável é migrar para cookie `httpOnly` — mais resistente a ataques XSS — mas isso exige configurar CSRF, que é um passo à parte.
+
+## Funcionalidade #2: Compartilhamento
+
+- **Backend:** nova tabela `document_shares` (documento + usuário + papel). Papéis: `editor` (edita conteúdo, não gerencia compartilhamento nem exclui) e `viewer` (somente leitura). Endpoints: `GET/POST /api/documents/{id}/shares` e `DELETE /api/documents/{id}/shares/{user_id}` — todos exclusivos do dono. `GET /api/documents` agora retorna documentos próprios + compartilhados com você. Convite é feito pelo e-mail de uma conta já existente no UWE (não há convite por link/e-mail externo ainda).
+- **Frontend:** botão "Compartilhar" no Dashboard (menu do card, só para o dono) e no Editor (cabeçalho, só para o dono) abrem o mesmo diálogo — convidar por e-mail, trocar papel, remover acesso. Documentos compartilhados exibem uma etiqueta com o nome do dono. No Editor, quem é `viewer` vê tudo em modo somente leitura (barra de ferramentas, inserção de mídia e busca/substituir ficam ocultas; título e fonte global ficam bloqueados).
 

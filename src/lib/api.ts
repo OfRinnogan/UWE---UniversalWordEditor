@@ -1,5 +1,7 @@
 // Typed fetch layer over the FastAPI backend. Base is the relative "/api" prefix so the
 // same code works in dev (Vite proxies /api → :8001) and behind a single origin in prod.
+import { getStoredToken, clearStoredToken } from "@/lib/tokenStorage";
+
 const BASE = "/api";
 
 // Fields are declared, not constructor parameter properties: tsconfig sets
@@ -19,16 +21,29 @@ export class ApiError extends Error {
 type JsonBody = unknown;
 
 async function request<T>(method: string, path: string, body?: JsonBody): Promise<T> {
-  // Auth rides the httpOnly session cookie automatically — never add auth headers here.
+  const token = getStoredToken();
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
   // FastAPI reports request-validation failures as 422 with a {detail: [...]} body.
   if (!res.ok) {
     const errBody = await res.json().catch(() => null);
+    if (res.status === 401) {
+      // Session expired or token invalid — clear it and bounce to the login
+      // screen. A hard redirect (not react-router) keeps this working from
+      // anywhere, including outside any router context.
+      clearStoredToken();
+      if (!location.pathname.startsWith("/login")) {
+        location.href = "/login";
+      }
+    }
     throw new ApiError(res.status, errBody);
   }
 

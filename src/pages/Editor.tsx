@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Download, Loader2, PanelRight, Type } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Download, Loader2, PanelRight, Share2, Type } from "lucide-react";
 import { apiGet, apiPut } from "@/lib/api";
 import type { UweDocument } from "@/lib/media";
 import { buildMediaHtml } from "@/lib/media";
+import { ShareDialog } from "@/components/ShareDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -41,6 +42,7 @@ export default function Editor() {
   const [showAssistant, setShowAssistant] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [selectedMedia, setSelectedMedia] = useState<HTMLElement | null>(null);
+  const [showShareDialog, setShowShareDialog] = useState(false);
 
   // Find & Replace — matchElsRef holds the live <mark> wrappers created by runFindSearch.
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -378,6 +380,9 @@ export default function Editor() {
     );
   }
 
+  const isReadOnly = data.role === "viewer";
+  const canManageSharing = data.role === "owner";
+
   return (
     <div className="flex h-svh flex-col bg-background">
       <header className="flex items-center gap-3 border-b border-border bg-card px-4 py-2.5">
@@ -388,19 +393,29 @@ export default function Editor() {
           data-testid="editor-title-input"
           value={title}
           onChange={(e) => handleTitleChange(e.target.value)}
+          disabled={isReadOnly}
           className="h-8 max-w-xs border-none bg-transparent px-1 font-heading text-base font-semibold shadow-none focus-visible:ring-1"
         />
-        <span className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="editor-save-status">
-          {saveStatus === "saving" ? (
-            <>
-              <Loader2 className="size-3 animate-spin" /> Salvando...
-            </>
-          ) : (
-            <>
-              <Check className="size-3" /> Salvo
-            </>
-          )}
-        </span>
+        {isReadOnly ? (
+          <span
+            className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+            data-testid="editor-readonly-badge"
+          >
+            Somente leitura
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="editor-save-status">
+            {saveStatus === "saving" ? (
+              <>
+                <Loader2 className="size-3 animate-spin" /> Salvando...
+              </>
+            ) : (
+              <>
+                <Check className="size-3" /> Salvo
+              </>
+            )}
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center gap-1.5 rounded-md border border-input px-2 py-1">
@@ -409,6 +424,7 @@ export default function Editor() {
             <Select
               value={globalFont ?? "__none__"}
               onValueChange={handleGlobalFontChange}
+              disabled={isReadOnly}
             >
               <SelectTrigger size="sm" className="h-6 w-[120px] border-none" data-testid="editor-global-font-select">
                 <SelectValue>{(v) => (v === "__none__" ? "Desativada" : FONT_OPTIONS.find((f) => f.value === v)?.label ?? "Fonte")}</SelectValue>
@@ -423,6 +439,18 @@ export default function Editor() {
               </SelectContent>
             </Select>
           </div>
+
+          {canManageSharing && (
+            <Button
+              data-testid="editor-share-button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setShowShareDialog(true)}
+            >
+              <Share2 className="size-3.5" /> Compartilhar
+            </Button>
+          )}
 
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -463,30 +491,32 @@ export default function Editor() {
         </div>
       </header>
 
-      <EditorToolbar onCommand={handleCommand} onFontSize={handleFontSize} globalFontActive={!!globalFont} />
+      {!isReadOnly && (
+        <EditorToolbar onCommand={handleCommand} onFontSize={handleFontSize} globalFontActive={!!globalFont} />
+      )}
 
       <div className="flex flex-1 overflow-hidden">
-        <MediaSidebar onInsertHtml={insertHtmlAtSelection} />
+        {!isReadOnly && <MediaSidebar onInsertHtml={insertHtmlAtSelection} />}
 
         <main className="relative flex-1 overflow-y-auto bg-[#f4f5f7] px-6 py-10">
           <div className="mx-auto w-[816px] max-w-full">
             <div
               ref={editorRef}
               data-testid="document-canvas"
-              contentEditable
+              contentEditable={!isReadOnly}
               suppressContentEditableWarning
               className={`uwe-canvas min-h-[1056px] rounded-sm border border-border bg-white px-16 py-14 shadow-2xl ${
                 globalFont ? "uwe-global-font-active" : ""
               }`}
               style={globalFont ? ({ ["--global-doc-font" as string]: globalFont } as React.CSSProperties) : undefined}
-              onInput={() => scheduleSave()}
-              onKeyDown={handleEditorKeyDown}
-              onMouseDown={handleEditorMouseDown}
-              onClick={handleEditorClick}
+              onInput={() => !isReadOnly && scheduleSave()}
+              onKeyDown={isReadOnly ? undefined : handleEditorKeyDown}
+              onMouseDown={isReadOnly ? undefined : handleEditorMouseDown}
+              onClick={isReadOnly ? undefined : handleEditorClick}
             />
           </div>
 
-          {selectedMedia && (
+          {!isReadOnly && selectedMedia && (
             <MediaInspector
               element={selectedMedia}
               onChange={() => scheduleSave()}
@@ -498,7 +528,7 @@ export default function Editor() {
             />
           )}
 
-          {showFindBar && (
+          {!isReadOnly && showFindBar && (
             <FindReplaceBar
               inputRef={findInputRef}
               query={findQuery}
@@ -524,6 +554,15 @@ export default function Editor() {
           />
         )}
       </div>
+
+      {canManageSharing && (
+        <ShareDialog
+          documentId={id as string}
+          documentTitle={title}
+          open={showShareDialog}
+          onOpenChange={setShowShareDialog}
+        />
+      )}
     </div>
   );
 }

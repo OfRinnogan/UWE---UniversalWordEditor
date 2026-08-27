@@ -24,4 +24,16 @@ export default defineConfig({
       },
     },
   },
+  preview: {
+    host: true,
+    port: 4173,
+    // `vite preview` (used to sanity-check a production build locally) does
+    // not inherit `server.proxy` — it needs its own copy of the same rule.
+    proxy: {
+      "/api": {
+        target: "http://localhost:8001",
+        changeOrigin: true,
+      },
+    },
+  },
 });

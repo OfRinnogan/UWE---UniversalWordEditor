@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText, Plus, MoreVertical, Pencil, Copy, Trash2, Search, Sparkles } from "lucide-react";
+import { FileText, Plus, MoreVertical, Pencil, Copy, Trash2, Search, Sparkles, LogOut, Users, Share2 } from "lucide-react";
 import { apiGet, apiPost, apiPut, apiDelete } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import type { UweDocument } from "@/lib/media";
+import { ShareDialog } from "@/components/ShareDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardFooter, CardTitle } from "@/components/ui/card";
@@ -52,10 +54,12 @@ function DocumentThumbnail({ docId, html }: { docId: string; html: string }) {
 export default function Dashboard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { user, logout } = useAuth();
   const [search, setSearch] = useState("");
   const [renameTarget, setRenameTarget] = useState<UweDocument | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<UweDocument | null>(null);
+  const [shareTarget, setShareTarget] = useState<UweDocument | null>(null);
 
   const { data, isLoading, error } = useQuery({ queryKey: ["documents"], queryFn: fetchDocuments });
 
@@ -127,11 +131,29 @@ export default function Dashboard() {
           >
             <Plus className="size-4" /> Novo documento
           </Button>
+
+          <div className="flex items-center gap-2 border-l border-border pl-4">
+            <span className="hidden text-sm text-muted-foreground sm:inline" data-testid="current-user-name">
+              {user?.name}
+            </span>
+            <Button
+              data-testid="logout-button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => {
+                logout();
+                navigate("/login");
+              }}
+              title="Sair"
+            >
+              <LogOut className="size-4" />
+            </Button>
+          </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-10">
-        <h1 className="mb-6 font-heading text-2xl font-bold tracking-tight">Meus documentos</h1>
+        <h1 className="mb-6 font-heading text-2xl font-bold tracking-tight">Documentos</h1>
 
         {isLoading && <p className="text-muted-foreground">Carregando documentos...</p>}
         {error && <p className="text-destructive" data-testid="dashboard-error">Não foi possível carregar os documentos.</p>}
@@ -171,31 +193,51 @@ export default function Dashboard() {
                       }
                     />
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        data-testid={`document-rename-${doc.id}`}
-                        onClick={() => {
-                          setRenameTarget(doc);
-                          setRenameValue(doc.title);
-                        }}
-                      >
-                        <Pencil className="size-4" /> Renomear
-                      </DropdownMenuItem>
+                      {doc.role !== "viewer" && (
+                        <DropdownMenuItem
+                          data-testid={`document-rename-${doc.id}`}
+                          onClick={() => {
+                            setRenameTarget(doc);
+                            setRenameValue(doc.title);
+                          }}
+                        >
+                          <Pencil className="size-4" /> Renomear
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem
                         data-testid={`document-duplicate-${doc.id}`}
                         onClick={() => duplicateMutation.mutate(doc.id)}
                       >
                         <Copy className="size-4" /> Duplicar
                       </DropdownMenuItem>
-                      <DropdownMenuItem
-                        data-testid={`document-delete-${doc.id}`}
-                        variant="destructive"
-                        onClick={() => setDeleteTarget(doc)}
-                      >
-                        <Trash2 className="size-4" /> Excluir
-                      </DropdownMenuItem>
+                      {doc.role === "owner" && (
+                        <DropdownMenuItem
+                          data-testid={`document-share-${doc.id}`}
+                          onClick={() => setShareTarget(doc)}
+                        >
+                          <Share2 className="size-4" /> Compartilhar
+                        </DropdownMenuItem>
+                      )}
+                      {doc.role === "owner" && (
+                        <DropdownMenuItem
+                          data-testid={`document-delete-${doc.id}`}
+                          variant="destructive"
+                          onClick={() => setDeleteTarget(doc)}
+                        >
+                          <Trash2 className="size-4" /> Excluir
+                        </DropdownMenuItem>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
+                {doc.role !== "owner" && (
+                  <div
+                    data-testid={`document-shared-badge-${doc.id}`}
+                    className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5 text-[11px] font-medium text-white backdrop-blur-sm"
+                  >
+                    <Users className="size-3" /> {doc.owner_name}
+                  </div>
+                )}
               </div>
               <CardContent className="py-1">
                 <div className="flex items-center gap-1.5">
@@ -258,6 +300,15 @@ export default function Dashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {shareTarget && (
+        <ShareDialog
+          documentId={shareTarget.id}
+          documentTitle={shareTarget.title}
+          open={!!shareTarget}
+          onOpenChange={(open) => !open && setShareTarget(null)}
+        />
+      )}
     </div>
   );
 }
