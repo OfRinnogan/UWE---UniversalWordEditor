@@ -43,6 +43,7 @@ export default function Editor() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [selectedMedia, setSelectedMedia] = useState<HTMLElement | null>(null);
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const [isExporting, setIsExporting] = useState<"docx" | "pdf" | null>(null);
 
   // Find & Replace — matchElsRef holds the live <mark> wrappers created by runFindSearch.
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -361,6 +362,32 @@ export default function Editor() {
     );
   }
 
+  async function handleExportDocx() {
+    setIsExporting("docx");
+    try {
+      const { exportToDocx } = await import("@/lib/exportDocx");
+      await exportToDocx(title || "documento", editorRef.current?.innerHTML ?? "");
+    } catch (err) {
+      console.error(err);
+      toast.error("Não foi possível gerar o .docx.");
+    } finally {
+      setIsExporting(null);
+    }
+  }
+
+  async function handleExportPdf() {
+    setIsExporting("pdf");
+    try {
+      const { exportToPdf } = await import("@/lib/exportPdf");
+      await exportToPdf(title || "documento", editorRef.current?.innerHTML ?? "");
+    } catch (err) {
+      console.error(err);
+      toast.error("Não foi possível gerar o PDF.");
+    } finally {
+      setIsExporting(null);
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="flex min-h-svh items-center justify-center">
@@ -462,6 +489,20 @@ export default function Editor() {
             />
             <DropdownMenuContent align="end">
               <DropdownMenuItem
+                data-testid="editor-export-docx"
+                disabled={isExporting !== null}
+                onClick={handleExportDocx}
+              >
+                {isExporting === "docx" ? "Gerando .docx..." : "Baixar como Word (.docx)"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="editor-export-pdf"
+                disabled={isExporting !== null}
+                onClick={handleExportPdf}
+              >
+                {isExporting === "pdf" ? "Gerando PDF..." : "Baixar como PDF (.pdf)"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 data-testid="editor-export-markdown"
                 onClick={() => downloadTextFile(`${title || "documento"}.md`, htmlToMarkdown(editorRef.current?.innerHTML ?? ""))}
               >
@@ -474,7 +515,7 @@ export default function Editor() {
                 Baixar como texto (.txt)
               </DropdownMenuItem>
               <DropdownMenuItem data-testid="editor-export-print" onClick={() => window.print()}>
-                Imprimir / Salvar como PDF
+                Imprimir (navegador)
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
