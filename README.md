@@ -6,8 +6,17 @@ O código pode estar com erro, pois eu criei em HTML por um método um tanto est
 Eu também não sei como farei para colocar na web, se vc souber, sinta-se à vontade para colocar nos comentários. 
 
 Tem também a pasta do node_modules, mas eu não consigo enviar pois tem 500 pastas, e sub pastas e sub-sub pastas etc... Mas pelo que sei, o node modules não é tão necessário. (Metade do peso do UWE é do node_modules, ele contém 34 MIL ARQUIVOS) 
-<img width="1401" height="450" alt="image" src="https://github.com/user-attachments/assets/da01f699-c147-49f3-8b76-53e404d5a9f4" />
-Essa é a foto dos arquivos que estão disponíveis aqui
+
+Lista de prioridade de atualização:
+
+1 Login ✅
+2 Compartilhamento ✅
+3 Exportação para .docx ou .pdf ✅
+4 Colaboração em tempo real
+5 Histórico de versão
+6 Aba de pesquisa do google
+7 Integração com Google Gemini ou qualquer outra IA
+8 (Por fim, mas não menos importante) Plugins, o que seria as extensões do Chrome, mas para o UWE
 
 ---
 
