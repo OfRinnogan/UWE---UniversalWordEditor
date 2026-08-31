@@ -23,6 +23,18 @@ export interface DocumentShare {
   role: "editor" | "viewer";
 }
 
+export interface VersionSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  created_by_name: string;
+}
+
+export interface VersionDetail extends VersionSummary {
+  content_html: string;
+  global_font: string | null;
+}
+
 export interface MediaUploadResponse {
   url: string;
   filename: string;

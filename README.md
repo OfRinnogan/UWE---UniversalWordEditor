@@ -6,17 +6,8 @@ O código pode estar com erro, pois eu criei em HTML por um método um tanto est
 Eu também não sei como farei para colocar na web, se vc souber, sinta-se à vontade para colocar nos comentários. 
 
 Tem também a pasta do node_modules, mas eu não consigo enviar pois tem 500 pastas, e sub pastas e sub-sub pastas etc... Mas pelo que sei, o node modules não é tão necessário. (Metade do peso do UWE é do node_modules, ele contém 34 MIL ARQUIVOS) 
-
-Lista de prioridade de atualização:
-
-1 Login ✅
-2 Compartilhamento ✅
-3 Exportação para .docx ou .pdf ✅
-4 Colaboração em tempo real
-5 Histórico de versão
-6 Aba de pesquisa do google
-7 Integração com Google Gemini ou qualquer outra IA
-8 (Por fim, mas não menos importante) Plugins, o que seria as extensões do Chrome, mas para o UWE
+<img width="1401" height="450" alt="image" src="https://github.com/user-attachments/assets/da01f699-c147-49f3-8b76-53e404d5a9f4" />
+Essa é a foto dos arquivos que estão disponíveis aqui
 
 ---
 
@@ -73,4 +64,35 @@ npm run build   # gera dist/
 - **Vídeo/áudio/anexos:** não podem ser embutidos em Word/PDF — aparecem como uma linha de texto com link para o arquivo original.
 - **Limitação conhecida:** as fontes personalizadas do editor (DM Sans, Lora, etc.) não são incorporadas nos arquivos exportados — o `.docx` usa Calibri/Georgia/Courier New (fontes padrão do Word) como aproximação, e o PDF usa uma única fonte embutida (Roboto) para todo o texto, já que embutir os arquivos de fonte reais é um passo maior, não incluído nesta rodada.
 - **Performance:** as duas bibliotecas de exportação (pesada, ~365KB e ~1.8MB) só são carregadas quando a pessoa clica em "Baixar" — não pesam no carregamento normal do editor.
+
+## Correções de UI e de segurança (revisão pós-teste)
+
+- **Fontes:** os 15 pacotes `@fontsource-*` estavam listados como dependência mas nunca eram importados — corrigido (`src/lib/fontFaces.ts`). O seletor de fonte por trecho usava `execCommand('fontName')`, que não entende valores CSS com aspas/fallback — trocado por um wrapper manual com `<span style="font-family:...">` (mesma técnica já usada pro tamanho de fonte). A "Fonte Global" também nunca funcionava: a variável CSS que ela define nunca era consumida por nenhuma regra — regra adicionada.
+- **Barra lateral cortada:** tinha 320px e as 3 abas (Web/Imagens/LM) mal cabiam — alargada pra 384px, abas compactadas, e adicionada rolagem vertical (o conteúdo podia estourar a altura sem como rolar).
+- **[Segurança] Timing leak no login:** login com e-mail inexistente pulava a verificação bcrypt inteira, respondendo bem mais rápido que senha errada — dava pra descobrir quais e-mails estão cadastrados só cronometrando a resposta. Corrigido: agora sempre roda uma comparação bcrypt (contra um hash fixo quando o e-mail não existe), igualando o tempo de resposta nos dois casos.
+- **[Segurança] Segredo do JWT previsível:** se a variável de ambiente `JWT_SECRET` não fosse configurada, o backend usava uma string fixa visível no próprio código — qualquer deploy que esquecesse de configurá-la ficaria vulnerável a forjar login de qualquer conta. Agora gera um segredo aleatório por processo quando a variável não está definida (trade-off: reiniciar o backend sem `JWT_SECRET` configurado desloga todo mundo — comportamento correto pra local, e força a configurar de verdade em produção).
+- **Crash com senha longa:** senha com mais de 72 bytes derrubava o backend com erro 500 (limite do próprio bcrypt), tanto no cadastro quanto no login. Agora retorna erro tratado (422 no cadastro, 401 no login) em vez de quebrar.
+- **Logout indevido:** o frontend tratava qualquer falha ao verificar a sessão (erro de rede, backend reiniciando, um 500 qualquer) como "sessão inválida" e deslogava a pessoa mesmo com token válido. Agora só desloga de verdade em caso de 401 confirmado; qualquer outro erro mostra uma tela de "não foi possível conectar" com botão de tentar de novo, sem apagar o login.
+
+## Funcionalidade #4: Colaboração em tempo real
+
+**Escopo, com transparência:** isso é presença ao vivo (ver quem está no documento agora) + sincronização automática do conteúdo (mudanças de outra pessoa aparecem sem precisar recarregar a página). **Não é** co-edição simultânea livre de conflitos ao estilo Google Docs (duas pessoas digitando na mesma frase e o texto se mesclando character a character) — isso exige um motor CRDT/OT, um projeto à parte, bem maior, que não foi construído aqui. Quando duas pessoas editam ao mesmo tempo, quem salvar por último "ganha" aquele ciclo — não há merge automático de edições sobrepostas.
+
+- **Como funciona:** WebSocket em `/ws/documents/{id}`. Ao conectar, a primeira mensagem obrigatória é `{"type":"auth","token":"..."}` (o token não vai na URL para não vazar em logs de acesso do servidor). O servidor valida o token e o acesso ao documento (dono ou compartilhado) antes de aceitar.
+- **Presença:** cada conexão é registrada por documento; toda entrada/saída dispara um broadcast da lista de quem está online (avatares com iniciais no cabeçalho do Editor).
+- **Sincronização de conteúdo:** quando alguém com permissão de edição salva, o servidor persiste no banco E transmite a mudança para todo mundo mais no documento (exceto quem enviou). `viewer` nunca pode enviar mudança — o servidor recusa mesmo que o frontend tente.
+- **Proteção contra sobrescrita:** uma atualização remota só é aplicada no navegador de alguém se o editor dessa pessoa **não estiver em foco** naquele instante — nunca arranca texto de baixo do cursor de quem está digitando. Se chegar enquanto a pessoa está digitando, fica pendente e aplica assim que ela parar (mantendo sempre só a versão mais recente, sem empilhar).
+- **Robustez:** reconecta sozinho se a conexão cair (exceto quando a causa é auth/permissão — nesse caso não adianta tentar de novo). Se o WebSocket estiver fora do ar, o autosave via REST (já existente) continua funcionando normalmente como rede de segurança.
+- **Limitação conhecida:** as conexões vivem na memória de um único processo do backend — funciona perfeitamente no `uvicorn` de hoje (um processo), mas rodar múltiplas instâncias/processos do backend ao mesmo tempo exigiria uma camada compartilhada (ex.: Redis pub/sub) para presença/broadcast chegarem em todo mundo, independente de qual instância cada pessoa está conectada. Fora do escopo desta rodada.
+- **Testado de ponta a ponta:** simulei dois usuários reais conectando, um editando e o outro recebendo a mudança ao vivo, confirmei que o conteúdo é persistido de verdade no banco (não só transmitido), testei um `viewer` tentando escrever (rejeitado), token forjado (conexão recusada), usuário sem acesso ao documento (conexão recusada), e a lógica de "não aplicar enquanto a pessoa digita" isoladamente.
+
+## Funcionalidade #5: Histórico de versões
+
+- **Como funciona:** a cada edição de conteúdo/título, o estado *anterior* à mudança é salvo como uma versão — mas só se a última versão salva tiver mais de 5 minutos (evita criar uma versão a cada tecla digitada durante uma sessão contínua de edição).
+- **Endpoints:** `GET /api/documents/{id}/versions` (lista), `GET /api/documents/{id}/versions/{version_id}` (detalhe/prévia), `POST /api/documents/{id}/versions/{version_id}/restore` (restaura).
+- **Restaurar é reversível:** ao restaurar uma versão antiga, o estado atual (antes da restauração) também é salvo como versão nova — nunca se perde uma versão por restaurar outra.
+- **Limite de 50 versões por documento**, com poda automática das mais antigas quando esse limite é ultrapassado.
+- **Permissões:** qualquer pessoa com acesso ao documento (mesmo `viewer`) pode ver o histórico; só `editor`/`owner` pode restaurar.
+- **Integração com colaboração em tempo real:** restaurar uma versão notifica ao vivo quem estiver com o documento aberto via WebSocket, do mesmo jeito que uma edição normal — testei isso especificamente (alguém só olhando o documento recebe a restauração de outra pessoa sem precisar recarregar a página).
+- **Testado de ponta a ponta:** confirmei o throttle de 5 minutos (editar duas vezes seguidas não duplica versão), que o snapshot realmente captura o estado anterior à edição (não o novo), as permissões (viewer vê histórico mas não restaura — 403 testado de verdade), e a poda no limite de 50 — nesse último, **achei e corrigi um bug de off-by-one real** (o SQLAlchemy já conta a linha recém-inserida antes da consulta de contagem, e eu somava +1 de novo por engano, podando uma versão a mais do que devia).
 

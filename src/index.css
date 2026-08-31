@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* The "Fonte Global" toggle (Editor.tsx) sets this class + CSS var on the document
+   canvas, but nothing ever consumed it — the global font silently did nothing.
+   !important is intentional: when active, the global font is meant to override any
+   per-selection font-family span (the toolbar's font picker is disabled while this
+   is on, precisely so there's one source of truth for the whole document's font). */
+.uwe-global-font-active,
+.uwe-global-font-active * {
+  font-family: var(--global-doc-font) !important;
+}

@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, Download, Loader2, PanelRight, Share2, Type } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, Check, ChevronDown, Download, History, Loader2, PanelRight, Share2, Type } from "lucide-react";
 import { apiGet, apiPut } from "@/lib/api";
 import type { UweDocument } from "@/lib/media";
 import { buildMediaHtml } from "@/lib/media";
 import { ShareDialog } from "@/components/ShareDialog";
+import { VersionHistoryDialog } from "@/components/VersionHistoryDialog";
+import { PresenceAvatars } from "@/components/PresenceAvatars";
+import { useCollab } from "@/lib/useCollab";
+import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -31,6 +35,7 @@ type SaveStatus = "idle" | "saving" | "saved";
 export default function Editor() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const editorRef = useRef<HTMLDivElement>(null);
   const lastRangeRef = useRef<Range | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -43,6 +48,7 @@ export default function Editor() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [selectedMedia, setSelectedMedia] = useState<HTMLElement | null>(null);
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
   const [isExporting, setIsExporting] = useState<"docx" | "pdf" | null>(null);
 
   // Find & Replace — matchElsRef holds the live <mark> wrappers created by runFindSearch.
@@ -53,6 +59,8 @@ export default function Editor() {
   const [replaceQuery, setReplaceQuery] = useState("");
   const [matchCount, setMatchCount] = useState(0);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(-1);
+
+  const { user } = useAuth();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["document", id],
@@ -65,6 +73,27 @@ export default function Editor() {
       apiPut<UweDocument>(`/documents/${id}`, payload),
     onMutate: () => setSaveStatus("saving"),
     onSuccess: () => setSaveStatus("saved"),
+  });
+
+  // Real-time collaboration: live presence + automatic content sync. A remote
+  // update is only ever applied while the local editor doesn't have focus (see
+  // isLocalEditorActive below) — this is last-write-wins sync, not conflict-free
+  // simultaneous co-editing (that needs a CRDT/OT engine, out of scope here).
+  const { presence, connectionState, sendContent } = useCollab({
+    documentId: id,
+    enabled: !!data,
+    currentUserId: user?.id,
+    isLocalEditorActive: () => document.activeElement === editorRef.current,
+    onRemoteContent: (update) => {
+      if (editorRef.current && update.content_html !== null) {
+        editorRef.current.innerHTML = update.content_html;
+      }
+      if (update.title !== null) {
+        setTitle(update.title);
+        titleRef.current = update.title;
+      }
+      toast.message(`${update.from_user_name} atualizou o documento`, { duration: 2500 });
+    },
   });
 
   // Load doc content into the contentEditable exactly once per document id.
@@ -227,14 +256,19 @@ export default function Editor() {
       setSaveStatus("saving");
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
+        const content_html = editorRef.current?.innerHTML ?? "";
         saveMutation.mutate({
           title: titleRef.current,
-          content_html: editorRef.current?.innerHTML ?? "",
+          content_html,
           ...extra,
         });
+        // Also broadcast to any live collaborators — REST above is the durable
+        // save (works even if the WebSocket is reconnecting); this is what makes
+        // the change show up for them without waiting for a page reload.
+        sendContent(content_html, titleRef.current);
       }, 900);
     },
-    [saveMutation]
+    [saveMutation, sendContent]
   );
 
   function focusEditor() {
@@ -265,6 +299,28 @@ export default function Editor() {
     const range = sel.getRangeAt(0);
     const span = document.createElement("span");
     span.style.fontSize = `${px}px`;
+    span.appendChild(range.extractContents());
+    range.insertNode(span);
+    sel.removeAllRanges();
+    scheduleSave();
+  }
+
+  function handleFontFamily(cssFontFamily: string) {
+    editorRef.current?.focus();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      toast.info("Selecione um trecho de texto para aplicar a fonte");
+      return;
+    }
+    // execCommand("fontName", ...) writes an HTML <font face="..."> attribute, which
+    // has no idea what to do with a CSS value like "'DM Sans Variable', sans-serif"
+    // (quotes + fallback) — it just treats the whole string as one literal font name,
+    // so the actual font never resolves. Wrapping the selection in a span with a real
+    // CSS font-family style — the same technique already used for font size — applies
+    // it correctly instead.
+    const range = sel.getRangeAt(0);
+    const span = document.createElement("span");
+    span.style.fontFamily = cssFontFamily;
     span.appendChild(range.extractContents());
     range.insertNode(span);
     sel.removeAllRanges();
@@ -362,6 +418,15 @@ export default function Editor() {
     );
   }
 
+  function handleRestore(restored: UweDocument) {
+    if (editorRef.current) editorRef.current.innerHTML = restored.content_html;
+    setTitle(restored.title);
+    titleRef.current = restored.title;
+    setGlobalFont(restored.global_font);
+    setSaveStatus("saved");
+    queryClient.setQueryData(["document", id], restored);
+  }
+
   async function handleExportDocx() {
     setIsExporting("docx");
     try {
@@ -445,6 +510,8 @@ export default function Editor() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          <PresenceAvatars users={presence} connectionState={connectionState} />
+
           <div className="flex items-center gap-1.5 rounded-md border border-input px-2 py-1">
             <Type className="size-3.5 text-muted-foreground" />
             <span className="text-xs text-muted-foreground">Fonte global</span>
@@ -466,6 +533,16 @@ export default function Editor() {
               </SelectContent>
             </Select>
           </div>
+
+          <Button
+            data-testid="editor-history-button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => setShowVersionHistory(true)}
+          >
+            <History className="size-3.5" /> Histórico
+          </Button>
 
           {canManageSharing && (
             <Button
@@ -533,7 +610,12 @@ export default function Editor() {
       </header>
 
       {!isReadOnly && (
-        <EditorToolbar onCommand={handleCommand} onFontSize={handleFontSize} globalFontActive={!!globalFont} />
+        <EditorToolbar
+          onCommand={handleCommand}
+          onFontSize={handleFontSize}
+          onFontFamily={handleFontFamily}
+          globalFontActive={!!globalFont}
+        />
       )}
 
       <div className="flex flex-1 overflow-hidden">
@@ -604,6 +686,14 @@ export default function Editor() {
           onOpenChange={setShowShareDialog}
         />
       )}
+
+      <VersionHistoryDialog
+        documentId={id as string}
+        open={showVersionHistory}
+        onOpenChange={setShowVersionHistory}
+        canRestore={!isReadOnly}
+        onRestored={handleRestore}
+      />
     </div>
   );
 }

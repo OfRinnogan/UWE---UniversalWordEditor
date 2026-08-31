@@ -24,17 +24,20 @@ export default function AssistantSidebar({ onInsertImageUrl, getDocTitle, getDoc
   }
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-border bg-card px-4 py-5" data-testid="assistant-sidebar">
+    <aside
+      className="flex w-96 shrink-0 flex-col overflow-y-auto border-l border-border bg-card px-4 py-5"
+      data-testid="assistant-sidebar"
+    >
       <Tabs defaultValue="web">
         <TabsList className="w-full">
-          <TabsTrigger data-testid="assistant-tab-web" value="web" className="flex-1">
-            <Search className="mr-1 size-3.5" /> Web
+          <TabsTrigger data-testid="assistant-tab-web" value="web" className="flex-1 gap-1 px-1 text-xs">
+            <Search className="size-3.5 shrink-0" /> Web
           </TabsTrigger>
-          <TabsTrigger data-testid="assistant-tab-images" value="images" className="flex-1">
-            <ImageIcon className="mr-1 size-3.5" /> Imagens
+          <TabsTrigger data-testid="assistant-tab-images" value="images" className="flex-1 gap-1 px-1 text-xs">
+            <ImageIcon className="size-3.5 shrink-0" /> Imagens
           </TabsTrigger>
-          <TabsTrigger data-testid="assistant-tab-notebooklm" value="notebooklm" className="flex-1">
-            <NotebookText className="mr-1 size-3.5" /> LM
+          <TabsTrigger data-testid="assistant-tab-notebooklm" value="notebooklm" className="flex-1 gap-1 px-1 text-xs">
+            <NotebookText className="size-3.5 shrink-0" /> LM
           </TabsTrigger>
         </TabsList>
 

@@ -22,6 +22,7 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from "@/lib/fonts";
 interface EditorToolbarProps {
   onCommand: (command: string, value?: string) => void;
   onFontSize: (px: number) => void;
+  onFontFamily: (cssFontFamily: string) => void;
   globalFontActive: boolean;
 }
 
@@ -42,7 +43,7 @@ function toolBtnProps(onCommand: () => void) {
   };
 }
 
-export default function EditorToolbar({ onCommand, onFontSize, globalFontActive }: EditorToolbarProps) {
+export default function EditorToolbar({ onCommand, onFontSize, onFontFamily, globalFontActive }: EditorToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-card px-4 py-2">
       <Button data-testid="toolbar-undo" variant="ghost" size="icon-sm" {...toolBtnProps(() => onCommand("undo"))}>
@@ -68,7 +69,7 @@ export default function EditorToolbar({ onCommand, onFontSize, globalFontActive 
       </Select>
 
       <Select
-        onValueChange={(v) => onCommand("fontName", v)}
+        onValueChange={onFontFamily}
         disabled={globalFontActive}
       >
         <SelectTrigger

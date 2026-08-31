@@ -22,17 +22,28 @@ export default defineConfig({
         target: "http://localhost:8001",
         changeOrigin: true,
       },
+      // Real-time collaboration's WebSocket connection — needs its own proxy entry
+      // with `ws: true`, Vite doesn't upgrade this automatically just because /api
+      // already proxies HTTP requests to the same backend.
+      "/ws": {
+        target: "ws://localhost:8001",
+        ws: true,
+      },
     },
   },
   preview: {
     host: true,
     port: 4173,
     // `vite preview` (used to sanity-check a production build locally) does
-    // not inherit `server.proxy` — it needs its own copy of the same rule.
+    // not inherit `server.proxy` — it needs its own copy of the same rules.
     proxy: {
       "/api": {
         target: "http://localhost:8001",
         changeOrigin: true,
+      },
+      "/ws": {
+        target: "ws://localhost:8001",
+        ws: true,
       },
     },
   },
