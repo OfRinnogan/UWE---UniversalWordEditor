@@ -51,6 +51,31 @@ async function request<T>(method: string, path: string, body?: JsonBody): Promis
   return (await res.json()) as T;
 }
 
+// For FormData bodies (file uploads) — deliberately does NOT set Content-Type itself;
+// the browser must set it (with the correct multipart boundary) when it sees the body
+// is a FormData instance, which only happens if no Content-Type is set manually here.
+async function requestUpload<T>(method: string, path: string, form: FormData): Promise<T> {
+  const token = getStoredToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, { method, headers, body: form });
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => null);
+    if (res.status === 401) {
+      clearStoredToken();
+      if (!location.pathname.startsWith("/login")) {
+        location.href = "/login";
+      }
+    }
+    throw new ApiError(res.status, errBody);
+  }
+
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
 // The response type is yours to declare: nothing infers across the Python boundary, so a
 // TS interface here mirrors the endpoint's Pydantic model by hand — keep the two in sync.
 export const apiGet = <T>(path: string) => request<T>("GET", path);
@@ -59,3 +84,4 @@ export const apiPut = <T>(path: string, body?: JsonBody) => request<T>("PUT", pa
 export const apiPatch = <T>(path: string, body?: JsonBody) =>
   request<T>("PATCH", path, body ?? null);
 export const apiDelete = <T>(path: string) => request<T>("DELETE", path);
+export const apiUpload = <T>(path: string, form: FormData) => requestUpload<T>("POST", path, form);

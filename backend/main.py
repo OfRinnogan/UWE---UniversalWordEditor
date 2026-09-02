@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 from uuid import uuid4
 import asyncio
 import json
@@ -7,15 +8,22 @@ import os
 import secrets
 
 import bcrypt
+import httpx
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, create_engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+
+# Loads backend/.env if present — this is where real secrets (Google OAuth client
+# secret, etc.) belong. That file is gitignored and never committed; see README.
+load_dotenv()
 
 DATABASE_URL = "sqlite:///./uwe.db"
 
@@ -29,16 +37,32 @@ JWT_SECRET = os.environ.get("JWT_SECRET") or secrets.token_hex(32)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRES_DAYS = 30
 
+# Google Drive integration (see README for how to obtain these). Sync features are
+# simply unavailable (return a clear error) until all three are configured — there's
+# no fake/dev fallback for OAuth credentials the way there is for JWT_SECRET, since
+# a fallback here couldn't do anything real anyway.
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.environ.get(
+    "GOOGLE_REDIRECT_URI", "http://localhost:8001/api/integrations/google/callback"
+)
+# Where the browser lands after connecting/disconnecting, back in the SPA.
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
 # bcrypt hard-rejects passwords longer than this many *bytes* (not characters —
 # multi-byte UTF-8 text hits the limit sooner). Enforced explicitly below so a long
 # password produces a clean error instead of an unhandled 500 from bcrypt itself.
 MAX_PASSWORD_BYTES = 72
 
-# Version history: a new snapshot is only taken if this much time has passed since
-# the last one for that document — otherwise every debounced autosave tick (every
-# ~900ms while someone types) would create its own version and flood the history
-# with near-duplicates. Capped per document so history can't grow unbounded.
-VERSION_SNAPSHOT_INTERVAL = timedelta(minutes=5)
+# Version history: a new snapshot is taken when either of these is true, so testing
+# and real usage both produce a meaningful trail instead of just one entry:
+#  - the person paused for at least this long since their last edit (a real gap
+#    between editing sessions, not just the ~900ms autosave debounce mid-typing), or
+#  - it's simply been this long since the last snapshot, regardless of pauses (a
+#    safety net so a very long uninterrupted editing session still gets checkpoints).
+# Capped per document so history can't grow unbounded.
+VERSION_IDLE_THRESHOLD = timedelta(seconds=60)
+VERSION_MAX_INTERVAL = timedelta(minutes=10)
 MAX_VERSIONS_PER_DOCUMENT = 50
 
 # Where uploaded media (images/video/audio/pdf/etc.) is stored on disk and the
@@ -110,6 +134,41 @@ class DocumentVersion(Base):
     created_by_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
 
 
+class UserIntegration(Base):
+    """One connected cloud-storage account per user per provider (e.g. Google
+    Drive). Holds the OAuth tokens needed to act on that account later."""
+
+    __tablename__ = "user_integrations"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_integration_user_provider"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)  # "google" (OneDrive later)
+    access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    account_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class DocumentCloudLink(Base):
+    """Tracks which external Drive/OneDrive file a UWE document has been synced to,
+    so repeat syncs update that same file instead of creating a new one each time."""
+
+    __tablename__ = "document_cloud_links"
+    __table_args__ = (
+        UniqueConstraint("document_id", "provider", name="uq_cloud_link_doc_provider"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    external_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_url: Mapped[str] = mapped_column(Text, nullable=False)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_synced_by_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+
+
 Base.metadata.create_all(engine)
 
 
@@ -153,6 +212,18 @@ class VersionSummary(BaseModel):
 class VersionDetail(VersionSummary):
     content_html: str
     global_font: str | None
+
+
+class IntegrationStatus(BaseModel):
+    provider: str
+    account_email: str | None
+    connected_at: datetime
+
+
+class CloudSyncStatus(BaseModel):
+    provider: str
+    external_url: str
+    last_synced_at: datetime
 
 
 class ShareResponse(BaseModel):
@@ -303,12 +374,18 @@ def _get_document_with_access(
 
 
 def _maybe_snapshot_version(db: Session, document: Document, actor_id: str) -> None:
-    """Saves the document's state as it is RIGHT NOW as a version, but only if
-    enough time has passed since the last snapshot — called just before applying
-    an incoming content/title change, so each stored version is a point you could
-    restore back to. Skips snapshotting on every single keystroke/autosave tick
-    (every ~900ms while someone types) which would otherwise flood history with
-    near-duplicate entries."""
+    """Saves the document's state as it is RIGHT NOW as a version — but only when
+    that's actually a meaningful checkpoint, called just before applying an incoming
+    content/title change so each stored version is a point you could restore back to.
+
+    Two triggers (either is enough): the person paused for a real gap since their
+    last edit (VERSION_IDLE_THRESHOLD, using document.updated_at — the previous
+    edit's timestamp), or it's been a while since the last snapshot regardless of
+    pauses (VERSION_MAX_INTERVAL, a safety net for one long uninterrupted session).
+    Without the idle-based trigger, someone editing in several short bursts across
+    a few minutes — completely normal usage — would only ever get the one initial
+    snapshot, since no single burst is long enough to cross a flat wall-clock
+    interval since that first version."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     latest = db.scalar(
@@ -316,8 +393,12 @@ def _maybe_snapshot_version(db: Session, document: Document, actor_id: str) -> N
         .where(DocumentVersion.document_id == document.id)
         .order_by(DocumentVersion.created_at.desc())
     )
-    if latest is not None and (now - latest.created_at) < VERSION_SNAPSHOT_INTERVAL:
-        return
+
+    if latest is not None:
+        paused_long_enough = (now - document.updated_at) >= VERSION_IDLE_THRESHOLD
+        max_interval_passed = (now - latest.created_at) >= VERSION_MAX_INTERVAL
+        if not paused_long_enough and not max_interval_passed:
+            return
 
     db.add(
         DocumentVersion(
@@ -766,8 +847,8 @@ def delete_document(document_id: str, current_user: User = Depends(get_current_u
     with Session(engine) as db:
         document = _require_owner(db, document_id, current_user)
 
-        # Cascade: drop any shares/versions pointing at this document first
-        # (SQLite doesn't enforce ON DELETE CASCADE here by default).
+        # Cascade: drop any shares/versions/cloud-links pointing at this document
+        # first (SQLite doesn't enforce ON DELETE CASCADE here by default).
         for share in db.scalars(
             select(DocumentShare).where(DocumentShare.document_id == document_id)
         ):
@@ -776,11 +857,377 @@ def delete_document(document_id: str, current_user: User = Depends(get_current_u
             select(DocumentVersion).where(DocumentVersion.document_id == document_id)
         ):
             db.delete(version)
+        for link in db.scalars(
+            select(DocumentCloudLink).where(DocumentCloudLink.document_id == document_id)
+        ):
+            db.delete(link)
 
         db.delete(document)
         db.commit()
 
         return {"ok": True}
+
+
+# --- Google Drive integration ---------------------------------------------
+#
+# UWE stays the primary place documents are edited; this lets a document also be
+# pushed to (and updated in) the user's own Google Drive as a real .docx file — a
+# synced backup/export, not a replacement for UWE's own storage.
+#
+# Uses the "drive.file" scope only: the app can only see/touch files IT created,
+# never someone's whole Drive. Google classifies this as a non-sensitive scope, so
+# it works immediately for real users without Google's app-verification review —
+# unlike broader scopes (e.g. full Drive read/write), which require that review to
+# leave "Testing" mode.
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+GOOGLE_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
+GOOGLE_SCOPES = "https://www.googleapis.com/auth/drive.file openid email"
+DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _require_google_configured() -> None:
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        raise HTTPException(
+            status_code=503,
+            detail="Integração com o Google Drive não está configurada neste servidor.",
+        )
+
+
+@app.post("/api/integrations/google/start")
+def start_google_oauth(current_user: User = Depends(get_current_user)):
+    """Called via a normal authenticated fetch (has the Bearer header). Returns a
+    short-lived, single-purpose ticket the frontend then uses for a plain browser
+    *navigation* to the /connect endpoint below — navigations can't carry our
+    Authorization header, and a ticket this narrow is a much smaller thing to expose
+    in a URL than the real, long-lived session token would be."""
+    _require_google_configured()
+    ticket = jwt.encode(
+        {
+            "purpose": "start_google_oauth",
+            "sub": current_user.id,
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=2),
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+    return {"ticket": ticket}
+
+
+@app.get("/api/integrations/google/connect")
+def google_oauth_connect(ticket: str):
+    _require_google_configured()
+    try:
+        payload = jwt.decode(ticket, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Link de conexão inválido ou expirado")
+    if payload.get("purpose") != "start_google_oauth":
+        raise HTTPException(status_code=401, detail="Link de conexão inválido")
+
+    # `state` round-trips through Google unmodified — carries which UWE user this
+    # is for (the callback has no Authorization header either, Google redirects the
+    # bare browser back to us) and a short expiry, reusing the same JWT machinery.
+    state = jwt.encode(
+        {
+            "purpose": "google_oauth_state",
+            "sub": payload["sub"],
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": GOOGLE_SCOPES,
+        "access_type": "offline",
+        # Forces Google to include a refresh_token even if this user connected
+        # before — without this, a *reconnect* often gets no refresh_token at all.
+        "prompt": "consent",
+        "state": state,
+    }
+    return RedirectResponse(f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
+
+
+@app.get("/api/integrations/google/callback")
+async def google_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    _require_google_configured()
+
+    if error or not code or not state:
+        return RedirectResponse(f"{FRONTEND_URL}/?google_error=1")
+
+    try:
+        payload = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("purpose") != "google_oauth_state":
+            raise jwt.PyJWTError("wrong purpose")
+        user_id = payload["sub"]
+    except jwt.PyJWTError:
+        return RedirectResponse(f"{FRONTEND_URL}/?google_error=1")
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        token_resp = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": GOOGLE_REDIRECT_URI,
+                "grant_type": "authorization_code",
+            },
+        )
+
+    if token_resp.status_code != 200:
+        return RedirectResponse(f"{FRONTEND_URL}/?google_error=1")
+
+    tokens = token_resp.json()
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    expires_in = tokens.get("expires_in", 3600)
+    id_token = tokens.get("id_token")
+
+    if not access_token:
+        return RedirectResponse(f"{FRONTEND_URL}/?google_error=1")
+
+    # Email is purely cosmetic (shown as "conectado como ___") — decoded without
+    # signature verification, which is fine for display-only use and avoids the
+    # extra complexity of fetching/caching Google's public keys for a non-security
+    # decision. It is never used to authenticate or authorize anything.
+    account_email = None
+    if id_token:
+        try:
+            id_payload = jwt.decode(id_token, options={"verify_signature": False})
+            account_email = id_payload.get("email")
+        except jwt.PyJWTError:
+            pass
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with Session(engine) as db:
+        existing = db.scalar(
+            select(UserIntegration).where(
+                UserIntegration.user_id == user_id, UserIntegration.provider == "google"
+            )
+        )
+        if existing:
+            existing.access_token = access_token
+            if refresh_token:
+                existing.refresh_token = refresh_token
+            existing.token_expires_at = now + timedelta(seconds=expires_in)
+            existing.account_email = account_email or existing.account_email
+        else:
+            db.add(
+                UserIntegration(
+                    id=str(uuid4()),
+                    user_id=user_id,
+                    provider="google",
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    token_expires_at=now + timedelta(seconds=expires_in),
+                    account_email=account_email,
+                    connected_at=now,
+                )
+            )
+        db.commit()
+
+    return RedirectResponse(f"{FRONTEND_URL}/?google_connected=1")
+
+
+@app.get("/api/integrations", response_model=list[IntegrationStatus])
+def list_integrations(current_user: User = Depends(get_current_user)):
+    with Session(engine) as db:
+        integrations = db.scalars(
+            select(UserIntegration).where(UserIntegration.user_id == current_user.id)
+        )
+        return [
+            IntegrationStatus(
+                provider=i.provider, account_email=i.account_email, connected_at=i.connected_at
+            )
+            for i in integrations
+        ]
+
+
+@app.delete("/api/integrations/google")
+async def disconnect_google(current_user: User = Depends(get_current_user)):
+    with Session(engine) as db:
+        integration = db.scalar(
+            select(UserIntegration).where(
+                UserIntegration.user_id == current_user.id, UserIntegration.provider == "google"
+            )
+        )
+        if integration is None:
+            return {"ok": True}
+
+        token_to_revoke = integration.access_token
+        db.delete(integration)
+        db.commit()
+
+    # Best-effort — if Google's revoke call fails, the local disconnect (the part
+    # that actually matters: UWE forgets the token) has already happened either way.
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(GOOGLE_REVOKE_URL, params={"token": token_to_revoke})
+    except httpx.HTTPError:
+        pass
+
+    return {"ok": True}
+
+
+async def _get_valid_google_access_token(db: Session, user_id: str) -> str:
+    integration = db.scalar(
+        select(UserIntegration).where(
+            UserIntegration.user_id == user_id, UserIntegration.provider == "google"
+        )
+    )
+    if integration is None:
+        raise HTTPException(status_code=409, detail="Conecte sua conta do Google Drive primeiro")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if integration.token_expires_at > now + timedelta(seconds=30):
+        return integration.access_token
+
+    if not integration.refresh_token:
+        raise HTTPException(
+            status_code=409, detail="Sua conexão com o Google Drive expirou — reconecte"
+        )
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "refresh_token": integration.refresh_token,
+                "grant_type": "refresh_token",
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=409, detail="Sua conexão com o Google Drive expirou — reconecte"
+        )
+
+    tokens = resp.json()
+    integration.access_token = tokens["access_token"]
+    integration.token_expires_at = now + timedelta(seconds=tokens.get("expires_in", 3600))
+    db.commit()
+    return integration.access_token
+
+
+def _build_drive_multipart_body(metadata: dict, content: bytes, content_type: str) -> tuple[bytes, str]:
+    """Google Drive's multipart upload isn't standard multipart/form-data — it's
+    multipart/related with exactly two parts (JSON metadata, then raw file bytes),
+    so this is built by hand rather than via httpx's form-data helpers."""
+    boundary = f"uwe_{uuid4().hex}"
+    metadata_json = json.dumps(metadata).encode("utf-8")
+    body = (
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode("utf-8")
+        + metadata_json
+        + f"\r\n--{boundary}\r\nContent-Type: {content_type}\r\n\r\n".encode("utf-8")
+        + content
+        + f"\r\n--{boundary}--".encode("utf-8")
+    )
+    return body, f"multipart/related; boundary={boundary}"
+
+
+@app.get("/api/documents/{document_id}/sync/google", response_model=CloudSyncStatus | None)
+def get_google_sync_status(document_id: str, current_user: User = Depends(get_current_user)):
+    with Session(engine) as db:
+        _get_document_with_access(db, document_id, current_user)
+        link = db.scalar(
+            select(DocumentCloudLink).where(
+                DocumentCloudLink.document_id == document_id, DocumentCloudLink.provider == "google"
+            )
+        )
+        if link is None:
+            return None
+        return CloudSyncStatus(
+            provider="google", external_url=link.external_url, last_synced_at=link.last_synced_at
+        )
+
+
+@app.post("/api/documents/{document_id}/sync/google", response_model=CloudSyncStatus)
+async def sync_document_to_google(
+    document_id: str, file: UploadFile, current_user: User = Depends(get_current_user)
+):
+    """Accepts a .docx file the FRONTEND generated (reusing the same tested exporter
+    behind "Baixar como Word") and uploads/updates it in the user's Google Drive.
+    The backend never generates the .docx itself — that logic already exists,
+    tested, in the browser; duplicating it in Python would be a second thing to
+    keep correct and in sync."""
+    _require_google_configured()
+
+    with Session(engine) as db:
+        document, _role, _owner = _get_document_with_access(
+            db, document_id, current_user, require_edit=True
+        )
+        existing_link = db.scalar(
+            select(DocumentCloudLink).where(
+                DocumentCloudLink.document_id == document_id, DocumentCloudLink.provider == "google"
+            )
+        )
+        title = document.title
+        access_token = await _get_valid_google_access_token(db, current_user.id)
+
+    content = await file.read()
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        if existing_link:
+            body, content_type = _build_drive_multipart_body(
+                {"name": f"{title}.docx"}, content, DOCX_MIME_TYPE
+            )
+            resp = await client.patch(
+                f"{GOOGLE_DRIVE_UPLOAD_URL}/{existing_link.external_file_id}",
+                params={"uploadType": "multipart", "fields": "id,webViewLink"},
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": content_type},
+                content=body,
+            )
+        else:
+            body, content_type = _build_drive_multipart_body(
+                {"name": f"{title}.docx", "mimeType": DOCX_MIME_TYPE}, content, DOCX_MIME_TYPE
+            )
+            resp = await client.post(
+                GOOGLE_DRIVE_UPLOAD_URL,
+                params={"uploadType": "multipart", "fields": "id,webViewLink"},
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": content_type},
+                content=body,
+            )
+
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=502, detail="O Google Drive recusou o envio do arquivo")
+
+    result = resp.json()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    with Session(engine) as db:
+        link = db.scalar(
+            select(DocumentCloudLink).where(
+                DocumentCloudLink.document_id == document_id, DocumentCloudLink.provider == "google"
+            )
+        )
+        if link:
+            link.external_file_id = result["id"]
+            link.external_url = result.get("webViewLink", "")
+            link.last_synced_at = now
+            link.last_synced_by_id = current_user.id
+        else:
+            db.add(
+                DocumentCloudLink(
+                    id=str(uuid4()),
+                    document_id=document_id,
+                    provider="google",
+                    external_file_id=result["id"],
+                    external_url=result.get("webViewLink", ""),
+                    last_synced_at=now,
+                    last_synced_by_id=current_user.id,
+                )
+            )
+        db.commit()
+
+    return CloudSyncStatus(
+        provider="google", external_url=result.get("webViewLink", ""), last_synced_at=now
+    )
 
 
 # --- Real-time collaboration (WebSocket) ----------------------------------

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Download, History, Loader2, PanelRight, Share2, Type } from "lucide-react";
-import { apiGet, apiPut } from "@/lib/api";
-import type { UweDocument } from "@/lib/media";
+import { apiGet, apiPut, apiUpload, ApiError } from "@/lib/api";
+import type { UweDocument, IntegrationStatus, CloudSyncStatus } from "@/lib/media";
 import { buildMediaHtml } from "@/lib/media";
 import { ShareDialog } from "@/components/ShareDialog";
 import { VersionHistoryDialog } from "@/components/VersionHistoryDialog";
@@ -93,6 +93,41 @@ export default function Editor() {
         titleRef.current = update.title;
       }
       toast.message(`${update.from_user_name} atualizou o documento`, { duration: 2500 });
+    },
+  });
+
+  const { data: integrations } = useQuery({
+    queryKey: ["integrations"],
+    queryFn: () => apiGet<IntegrationStatus[]>("/integrations"),
+  });
+  const isGoogleConnected = !!integrations?.find((i) => i.provider === "google");
+
+  const { data: googleSyncStatus } = useQuery({
+    queryKey: ["sync-status", id, "google"],
+    queryFn: () => apiGet<CloudSyncStatus | null>(`/documents/${id}/sync/google`),
+    enabled: !!id,
+  });
+
+  const syncGoogleMutation = useMutation({
+    mutationFn: async () => {
+      // Dynamically imported (like the docx/pdf export handlers below) so the
+      // ~365KB docx-generation library only loads when someone actually syncs.
+      const { buildDocxBlob } = await import("@/lib/exportDocx");
+      const blob = await buildDocxBlob(title, editorRef.current?.innerHTML ?? "");
+      const form = new FormData();
+      form.append("file", blob, `${title || "documento"}.docx`);
+      return apiUpload<CloudSyncStatus>(`/documents/${id}/sync/google`, form);
+    },
+    onSuccess: (status) => {
+      queryClient.setQueryData(["sync-status", id, "google"], status);
+      toast.success("Sincronizado com o Google Drive");
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && err.status === 409) {
+        toast.error("Conecte sua conta do Google Drive primeiro (menu no painel de documentos)");
+      } else {
+        toast.error("Não foi possível sincronizar com o Google Drive");
+      }
     },
   });
 
@@ -594,6 +629,29 @@ export default function Editor() {
               <DropdownMenuItem data-testid="editor-export-print" onClick={() => window.print()}>
                 Imprimir (navegador)
               </DropdownMenuItem>
+              {!isReadOnly && (
+                <DropdownMenuItem
+                  data-testid="editor-sync-google"
+                  disabled={syncGoogleMutation.isPending}
+                  onClick={() => syncGoogleMutation.mutate()}
+                >
+                  {syncGoogleMutation.isPending
+                    ? "Enviando para o Google Drive..."
+                    : googleSyncStatus
+                      ? "Atualizar no Google Drive"
+                      : isGoogleConnected
+                        ? "Enviar para o Google Drive"
+                        : "Enviar para o Google Drive (conectar)"}
+                </DropdownMenuItem>
+              )}
+              {googleSyncStatus && (
+                <DropdownMenuItem
+                  data-testid="editor-view-in-drive"
+                  onClick={() => window.open(googleSyncStatus.external_url, "_blank", "noopener")}
+                >
+                  Ver no Google Drive ↗
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
 

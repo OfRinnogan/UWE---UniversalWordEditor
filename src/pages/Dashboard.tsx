@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileText, Plus, MoreVertical, Pencil, Copy, Trash2, Search, Sparkles, LogOut, Users, Share2 } from "lucide-react";
@@ -6,6 +6,7 @@ import { apiGet, apiPost, apiPut, apiDelete } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import type { UweDocument } from "@/lib/media";
 import { ShareDialog } from "@/components/ShareDialog";
+import { GoogleDriveMenu } from "@/components/GoogleDriveMenu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardFooter, CardTitle } from "@/components/ui/card";
@@ -60,6 +61,21 @@ export default function Dashboard() {
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<UweDocument | null>(null);
   const [shareTarget, setShareTarget] = useState<UweDocument | null>(null);
+
+  // The backend's OAuth callback redirects here with a query param — pick it up
+  // once, show the outcome, then clean the URL so a refresh doesn't re-show it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("google_connected")) {
+      toast.success("Google Drive conectado");
+      queryClient.invalidateQueries({ queryKey: ["integrations"] });
+      window.history.replaceState({}, "", window.location.pathname);
+    } else if (params.has("google_error")) {
+      toast.error("Não foi possível conectar ao Google Drive");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { data, isLoading, error } = useQuery({ queryKey: ["documents"], queryFn: fetchDocuments });
 
@@ -133,6 +149,7 @@ export default function Dashboard() {
           </Button>
 
           <div className="flex items-center gap-2 border-l border-border pl-4">
+            <GoogleDriveMenu />
             <span className="hidden text-sm text-muted-foreground sm:inline" data-testid="current-user-name">
               {user?.name}
             </span>

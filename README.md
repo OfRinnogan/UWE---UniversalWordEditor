@@ -17,6 +17,7 @@ Essa é a foto dos arquivos que estão disponíveis aqui
 ```bash
 cd backend
 pip install -r requirements.txt
+cp .env.example .env   # depois edite o .env e preencha os valores (veja "Google Drive" abaixo)
 uvicorn main:app --reload --port 8001
 ```
 
@@ -88,11 +89,38 @@ npm run build   # gera dist/
 
 ## Funcionalidade #5: Histórico de versões
 
-- **Como funciona:** a cada edição de conteúdo/título, o estado *anterior* à mudança é salvo como uma versão — mas só se a última versão salva tiver mais de 5 minutos (evita criar uma versão a cada tecla digitada durante uma sessão contínua de edição).
+- **Como funciona:** a cada edição de conteúdo/título, o estado *anterior* à mudança é salvo como uma versão — mas só quando isso é um checkpoint que faz sentido: se a pessoa **pausou por pelo menos 60 segundos** desde a última edição (sinal real de que uma sessão de edição terminou), ou se já passou 10 minutos desde a última versão salva mesmo sem pausa (rede de segurança para sessões contínuas muito longas). *(Nota: a primeira versão desta funcionalidade usava um intervalo fixo de 5 minutos desde a última versão, o que fazia sessões de teste curtas nunca gerarem nada além do estado inicial em branco — corrigido para o modelo por pausa acima.)*
 - **Endpoints:** `GET /api/documents/{id}/versions` (lista), `GET /api/documents/{id}/versions/{version_id}` (detalhe/prévia), `POST /api/documents/{id}/versions/{version_id}/restore` (restaura).
 - **Restaurar é reversível:** ao restaurar uma versão antiga, o estado atual (antes da restauração) também é salvo como versão nova — nunca se perde uma versão por restaurar outra.
 - **Limite de 50 versões por documento**, com poda automática das mais antigas quando esse limite é ultrapassado.
 - **Permissões:** qualquer pessoa com acesso ao documento (mesmo `viewer`) pode ver o histórico; só `editor`/`owner` pode restaurar.
 - **Integração com colaboração em tempo real:** restaurar uma versão notifica ao vivo quem estiver com o documento aberto via WebSocket, do mesmo jeito que uma edição normal — testei isso especificamente (alguém só olhando o documento recebe a restauração de outra pessoa sem precisar recarregar a página).
 - **Testado de ponta a ponta:** confirmei o throttle de 5 minutos (editar duas vezes seguidas não duplica versão), que o snapshot realmente captura o estado anterior à edição (não o novo), as permissões (viewer vê histórico mas não restaura — 403 testado de verdade), e a poda no limite de 50 — nesse último, **achei e corrigi um bug de off-by-one real** (o SQLAlchemy já conta a linha recém-inserida antes da consulta de contagem, e eu somava +1 de novo por engano, podando uma versão a mais do que devia).
+
+## Funcionalidade #6: Sincronização com Google Drive
+
+**Escopo:** o UWE continua sendo o lugar principal onde se edita — isso não substitui o armazenamento próprio nem a colaboração em tempo real. É um recurso adicional: enviar/atualizar uma cópia `.docx` do documento no Google Drive da própria pessoa, com um link direto pra abrir lá.
+
+### Por que Google Drive primeiro, e por que o escopo `drive.file`
+
+Entre Google Drive e OneDrive, o Drive foi escolhido por ser mais rápido de colocar no ar de graça: o escopo usado (`drive.file`, que só dá acesso aos arquivos que o próprio UWE cria — nunca ao Drive inteiro da pessoa) é classificado pelo Google como **não sensível**, então funciona imediatamente para contas reais, sem passar pelo processo de verificação de app do Google (que pode levar semanas). OneDrive fica para uma próxima rodada, seguindo o mesmo padrão de arquitetura (as tabelas já usam um campo `provider` genérico pensando nisso).
+
+### Configuração necessária (você precisa fazer isso — vide instruções que já te passei)
+
+1. Criar um projeto no [Google Cloud Console](https://console.cloud.google.com), ativar a **Google Drive API**, configurar a tela de consentimento OAuth (modo "Teste" já funciona) e criar um **ID do cliente OAuth** do tipo "Aplicativo da Web", com o URI de redirecionamento `http://localhost:8001/api/integrations/google/callback`.
+2. Copiar `backend/.env.example` para `backend/.env` e preencher `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` com os valores reais. **Esse arquivo nunca deve ser commitado** (já está no `.gitignore`).
+3. Sem essas variáveis configuradas, a integração simplesmente fica indisponível (erro claro, não trava o resto do app).
+
+### Como funciona
+
+- **Conectar:** botão "Google Drive" no cabeçalho do painel de documentos. Ao clicar, o backend gera um "ticket" de uso único (válido por 2 minutos) e o navegador é redirecionado de verdade para a tela de consentimento do Google — o token de sessão do UWE nunca aparece na URL, só esse ticket bem mais restrito.
+- **Sincronizar um documento:** no menu "Exportar" do Editor, "Enviar para o Google Drive" (ou "Atualizar", se já sincronizado antes). O `.docx` é gerado no navegador (reaproveitando o mesmo exportador testado da funcionalidade #3) e enviado ao backend, que sobe pro Drive usando o token da conta conectada.
+- **Atualiza o mesmo arquivo:** da segunda sincronização em diante, o UWE atualiza o arquivo já existente no Drive (não cria um novo a cada vez) — o vínculo fica guardado por documento.
+- **Permissões:** só quem pode editar o documento (`owner`/`editor`) pode sincronizar; `viewer` não vê essa opção.
+- **Desconectar:** menu do Google Drive no painel de documentos → "Desconectar" — remove os tokens do UWE e também revoga o acesso do lado do Google.
+- **Testado sem credenciais reais** (que só você pode gerar): validei toda a lógica que não depende de chamar o Google de verdade — geração e validação do ticket/state, a URL de redirecionamento montada corretamente (inclusive um bug real que corrigi: o `scope` com espaços não estava sendo codificado como `%20`/`+`, o que quebraria a autenticação), a estrutura exata do corpo `multipart/related` que o Drive exige para upload, e o erro claro (409) ao tentar sincronizar sem ter conectado a conta. A troca de código por token e o upload de verdade só podem ser validados com credenciais reais — no fluxo em uso normal, teste conectando sua conta e sincronizando um documento.
+
+## Bug encontrado durante esta rodada (não relacionado ao Drive)
+
+Ao construir a integração com o Google Drive, revisei o upload de mídia e achei que ele estava **quebrado desde que o login foi implementado**: `MediaSidebar.tsx` fazia uma chamada `fetch()` direta sem enviar o token de autenticação, então todo upload de imagem/vídeo/arquivo estava retornando 401 sem que ninguém tivesse percebido ainda. Corrigido — agora usa a mesma camada de API autenticada usada em todo o resto do app.
 

@@ -84,7 +84,7 @@ function blockToDocx(block: DocBlock) {
   });
 }
 
-export async function exportToDocx(title: string, editorHtml: string): Promise<void> {
+export async function buildDocxBlob(title: string, editorHtml: string): Promise<Blob> {
   const blocks = await parseEditorHtml(editorHtml);
 
   const doc = new Document({
@@ -107,7 +107,11 @@ export async function exportToDocx(title: string, editorHtml: string): Promise<v
     ],
   });
 
-  const blob = await Packer.toBlob(doc);
+  return Packer.toBlob(doc);
+}
+
+export async function exportToDocx(title: string, editorHtml: string): Promise<void> {
+  const blob = await buildDocxBlob(title, editorHtml);
   downloadBlob(blob, `${title || "documento"}.docx`);
 }
 

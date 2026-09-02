@@ -35,6 +35,18 @@ export interface VersionDetail extends VersionSummary {
   global_font: string | null;
 }
 
+export interface IntegrationStatus {
+  provider: "google";
+  account_email: string | null;
+  connected_at: string;
+}
+
+export interface CloudSyncStatus {
+  provider: "google";
+  external_url: string;
+  last_synced_at: string;
+}
+
 export interface MediaUploadResponse {
   url: string;
   filename: string;

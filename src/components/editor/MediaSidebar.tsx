@@ -3,6 +3,7 @@ import { Upload, Image as ImageIcon, Video, Music, FileText, Loader2 } from "luc
 import { Button } from "@/components/ui/button";
 import type { MediaUploadResponse } from "@/lib/media";
 import { buildMediaHtml } from "@/lib/media";
+import { apiUpload } from "@/lib/api";
 import { toast } from "sonner";
 
 interface MediaSidebarProps {
@@ -12,9 +13,7 @@ interface MediaSidebarProps {
 async function uploadFile(file: File): Promise<MediaUploadResponse> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/api/media/upload", { method: "POST", body: form });
-  if (!res.ok) throw new Error("upload failed");
-  return res.json();
+  return apiUpload<MediaUploadResponse>("/media/upload", form);
 }
 
 export default function MediaSidebar({ onInsertHtml }: MediaSidebarProps) {
